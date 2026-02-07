@@ -9,6 +9,8 @@ class CodebaseCartographer:
         self.root_dir = os.path.abspath(root_dir)
         self.nodes = []
         self.links = []
+        self.file_map = {}
+        self.normalized_id_map = {}
         self.stats = {
             "cpp": 0, "hpp": 0, "py": 0, "other": 0,
             "total_lines": 0, "file_count": 0
@@ -16,8 +18,6 @@ class CodebaseCartographer:
 
     def scan(self):
         print(f"[*] Analyzing Silicon Structure at {self.root_dir}...")
-        
-        file_map = {}
         
         # 1. Walk the directory
         for root, dirs, files in os.walk(self.root_dir):
@@ -45,7 +45,9 @@ class CodebaseCartographer:
                     "lines": self._count_lines(os.path.join(root, file))
                 }
                 self.nodes.append(node)
-                file_map[rel_path] = node
+                normalized_rel_path = self._normalize_relpath(rel_path)
+                self.file_map[normalized_rel_path] = node
+                self.normalized_id_map[normalized_rel_path] = node["id"]
                 self.stats["total_lines"] += node["lines"]
 
         # 2. Analyze Connections (Static Dependency Extraction)
@@ -69,6 +71,12 @@ class CodebaseCartographer:
                 return len(f.readlines())
         except: return 0
 
+    def _normalize_relpath(self, path):
+        normalized = os.path.normpath(path).replace('\\', '/')
+        if normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized
+
     def _find_py_imports(self, source_id, path):
         try:
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -77,10 +85,18 @@ class CodebaseCartographer:
                 imports = re.findall(r"(?:from|import)\s+([\w\.]+)", content)
                 for imp in imports:
                     target = imp.replace('.', '/')
-                    # Check for potential file matches
-                    for node in self.nodes:
-                        if target in node["id"]:
-                            self.links.append({"source": source_id, "target": node["id"], "value": 1})
+                    candidates = (
+                        f"{target}.py",
+                        f"{target}/__init__.py",
+                    )
+                    for candidate in candidates:
+                        normalized_candidate = self._normalize_relpath(candidate)
+                        if normalized_candidate in self.file_map:
+                            self.links.append({
+                                "source": source_id,
+                                "target": self.normalized_id_map[normalized_candidate],
+                                "value": 1
+                            })
         except: pass
 
     def _find_cpp_includes(self, source_id, path):
@@ -89,10 +105,13 @@ class CodebaseCartographer:
                 content = f.read()
                 includes = re.findall(r'#include\s+["<]([\w\./\\]+)[">]', content)
                 for inc in includes:
-                    target = inc.replace('\\', '/')
-                    for node in self.nodes:
-                        if target in node["id"]:
-                            self.links.append({"source": source_id, "target": node["id"], "value": 2})
+                    target = self._normalize_relpath(inc)
+                    if target in self.file_map:
+                        self.links.append({
+                            "source": source_id,
+                            "target": self.normalized_id_map[target],
+                            "value": 2
+                        })
         except: pass
 
     def generate_html(self, output_path="CODEBASE_MAP.html"):
